@@ -4,11 +4,10 @@ Minimalistic implementation of an actor concurrency model powered by asyncio.
 
 ---
 
-`pip install .`
-
-## Show me the code!
-
+* Installation: `pip install pyctor` (requires Python `>= 3.7.3`)
 * [API](#api)
+
+## Example
 
 Imagine a teacher and two students, Sarah and Mike, going to a playground to play a round of ping-pong. The teacher throws the ball to Mike, and so the match between the two kids begins. Should one of them decide they've had enough and leave the playground, the other one will follow. Meanwhile, the teacher watches the students and leaves with them once they're done. Cut.
 

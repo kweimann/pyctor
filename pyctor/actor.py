@@ -38,7 +38,7 @@ class Actor:  # inheritable Actor class
     # noinspection PyProtectedMember
     def tell(
             self,
-            actor: ActorRef,
+            actor: Union['Actor', ActorRef],
             message: 'any',
             *,
             delay: Union[None, int, float] = None,
@@ -343,7 +343,7 @@ class ActorSystem:  # ActorSystem controls all the actors
             self,
             actor: Actor,
             actor_ref: ActorRef,
-            actor_ctx
+            actor_ctx: '_ActorContext'
     ) -> None:
         try:
             await actor.started()

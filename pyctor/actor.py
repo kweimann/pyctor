@@ -292,13 +292,14 @@ class ActorSystem:  # ActorSystem controls all the actors
             self,
             timeout: Union[None, int, float] = None
     ) -> None:
-        lifecycle_tasks = []
-        for actor_ref, actor_ctx in self._actors.items():
-            self.stop(actor_ref)
-            lifecycle_tasks.append(actor_ctx.lifecycle)
-        done, pending = await asyncio.wait(lifecycle_tasks, timeout=timeout)
-        for lifecycle_task in pending:
-            lifecycle_task.cancel()
+        if self._actors:
+            lifecycle_tasks = []
+            for actor_ref, actor_ctx in self._actors.items():
+                self.stop(actor_ref)
+                lifecycle_tasks.append(actor_ctx.lifecycle)
+            done, pending = await asyncio.wait(lifecycle_tasks, timeout=timeout)
+            for lifecycle_task in pending:
+                lifecycle_task.cancel()
         self._stopped.set()
 
     def _validate_actor_ref(

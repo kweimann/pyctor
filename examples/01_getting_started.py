@@ -31,7 +31,7 @@ class Student(Actor):  # subclass of Actor
         elif message == 'pong!':
             # Respond with "ping" after 1 second.
             self.schedule_tell(sender, 'ping!', delay=1)
-        print(f'[{datetime.now()}] {sender.name} to {self.name}: {message}')
+        print(f'[{datetime.now()}] {sender} to {self}: {message}')
 
 
 class Teacher(Actor):
@@ -50,7 +50,7 @@ class Teacher(Actor):
         self.tell(mike, Play(sarah))
         # Initialize the number of students to 2.
         self.students = 2
-        print(f'[{datetime.now()}] {self.name}: it\'s playtime!')
+        print(f'[{datetime.now()}] {self}: it\'s playtime!')
 
     async def receive(self, sender, message):
         if isinstance(message, Terminated):
@@ -61,7 +61,7 @@ class Teacher(Actor):
             self.system.shutdown()
 
     async def stopped(self):
-        print(f'[{datetime.now()}] {self.name}: time to go back.')
+        print(f'[{datetime.now()}] {self}: time to go back.')
 
 
 async def main():

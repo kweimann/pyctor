@@ -1,6 +1,7 @@
 __all__ = ('ActorRef', 'Actor', 'ActorSystem', 'PoisonPill', 'DeadLetter', 'Terminated')
 
 import asyncio
+import logging
 import uuid
 from dataclasses import dataclass
 from typing import Union
@@ -139,6 +140,7 @@ class Actor:  # inheritable Actor class
         """
         pass
 
+    # noinspection PyMethodMayBeStatic
     async def restarted(
             self,
             sender: ActorRef,
@@ -155,7 +157,7 @@ class Actor:  # inheritable Actor class
         Returns:
             None
         """
-        pass
+        logging.exception('%s failed to receive message: %s', sender, message, exc_info=error)
 
     async def stopped(self) -> None:
         """Called by the system to let this actor know that they will not receive messages anymore.

@@ -1,6 +1,6 @@
 # 🎭 pyctor
 
-Minimalistic implementation of an actor concurrency model powered by asyncio.
+Minimalistic implementation of the actor concurrency model powered by asyncio.
 
 ---
 
@@ -9,9 +9,9 @@ Minimalistic implementation of an actor concurrency model powered by asyncio.
 
 ## Example
 
-Imagine a teacher and two students, Sarah and Mike, going to a playground to play a round of ping-pong. The teacher throws the ball to Mike, and so the match between the two kids begins. Should one of them decide they've had enough and leave the playground, the other one will follow. Meanwhile, the teacher watches the students and leaves with them once they're done. Cut.
+Imagine a teacher and two students, Sarah and Mike, at a playground ready to play a round of ping-pong. The teacher throws the ball to Mike and the match between the two kids begins. Should one of them decide they've had enough and leave the playground, the other one will follow. Meanwhile, the teacher watches the students and leaves with them once they've finished playing.
 
-Let's start with the implementation of a student i.e. Sarah and Mike. The students exchange ping-pong messages until one of them randomly decides to stop:
+Let's start with the implementation of a student, i.e., Sarah and Mike. The students exchange ping-pong messages until one of them randomly decides to stop:
 
 ```python
 @dataclass
@@ -21,24 +21,24 @@ class Play:
 
 class Student(Actor):  # subclass of Actor
     # Every Actor must implement `receive` to receive messages.
-    async def receive(self, sender, message):  
+    async def receive(self, sender, message):
         if isinstance(message, Play):
-            # Student was told to play. 
+            # Student was told to play.
             # Send a message to the other student which will start the match.
-            self.tell(message.student, 'ping!', delay=1)
+            self.tell(message.student, 'ping!')
         elif message == 'bye!':
             # The other student has stopped so this student stops as well.
             self.stop()
-        elif random.random() < 0.5:
-            # With a probability of 0.5 leave the playground and notify the other student.
+        elif random.random() < 0.25:
+            # With a probability of 0.25 leave the playground and notify the other student.
             self.tell(sender, 'bye!')
             self.stop()
         elif message == 'ping!':
             # Respond with "pong" after 1 second.
-            self.tell(sender, 'pong!', delay=1)
+            self.schedule_tell(sender, 'pong!', delay=1)
         elif message == 'pong!':
             # Respond with "ping" after 1 second.
-            self.tell(sender, 'ping!', delay=1)
+            self.schedule_tell(sender, 'ping!', delay=1)
         print(f'[{datetime.now()}] {sender.name} to {self.name}: {message}')
 ```
 
@@ -69,13 +69,13 @@ class Teacher(Actor):
             self.students -= 1
         if self.students == 0:
             # All students have stopped so shut down.
-            await self.system.shutdown()
+            self.system.shutdown()
 
     async def stopped(self):
         print(f'[{datetime.now()}] {self.name}: time to go back.')
 ```
 
-Finally, the script first creates the actor system and the teacher, then waits for the system to shut down.
+Finally, we implement the top-level entry point `main()` function that creates the actor system, the teacher, and waits for the system to shut down.
 
 ```python
 import asyncio
@@ -91,20 +91,19 @@ from pyctor import ActorSystem, Actor, ActorRef, Terminated
 
 # [Teacher code omitted]
 
+async def main():
+    # Create the actor system.
+    system = ActorSystem()
+    # Create the teacher.
+    system.create(Teacher(), name='Teacher')
+    # Run until system is shutdown.
+    await system.stopped()
+
 if __name__ == '__main__':
-    loop = asyncio.get_event_loop()
-    try:
-        # Create the actor system.
-        system = ActorSystem()
-        # Create the teacher.
-        system.create(Teacher(), name='Teacher')
-        # Run until system is shutdown.
-        loop.run_until_complete(system.stopped())
-    finally:
-        loop.close()
+    asyncio.run(main())
 ```
 
-An output of the script could be:
+An output of this script could be:
 
 ```
 [2020-06-21 12:53:41.598117] Teacher: it's playtime!
@@ -122,21 +121,24 @@ Quick overview of the API:
 
 * `pyctor.ActorSystem`
   * `create(actor, name=None)` Start an actor.
-  * `tell(actor, message, *, delay=None, period=None)` Deliver a message to an actor.
+  * `tell(actor, message)` Deliver a message to an actor.
+  * `schedule_tell(actor, message, *, delay=None, period=None)` Schedule a message to be delivered to an actor at some time.
   * `stop(actor)` Stop an actor.
   * `shutdown(timeout=None)` Initialize a shutdown of the actor system.
   * `stopped()` Await system shutdown.
 
 * `pyctor.Actor`
   * `receive(sender, message)` Must be implemented by the class inheriting from Actor. It is used by the system to deliver the messages.
-  * `tell(actor, message, *, delay=None, period=None)` Deliver a message to another actor.
-  * `watch(actor)` Watch another actor and receive a `Terminated(actor)` message when the watched actor is terminated.
+  * `tell(actor, message)` Deliver a message to another actor.
+  * `schedule_tell(actor, message, *, delay=None, period=None)` Schedule a message to be delivered to another actor at some time.
+  * `watch(actor)` Watch another actor and receive a `Terminated(actor)` message when the watched actor stops.
   * `unwatch(actor)` Stop watching another actor.
   * `stop()` Stop the actor.
   * `started()` Called by the system before the actor starts to receive messages.
+  * `restarted(sender, message, error)` Called by the system if receiving the message caused an error. Actor will continue to receive messages.
   * `stopped()` Called by the system before stopping the actor. The actor will not receive messages anymore.
 
-* system messages:
-  * `PoisonPill()` Kills an actor.
-  * `Terminated(actor)` Sent to all watchers when the actor dies.
-  * `DeadLetter(actor, message)` Sent back to the sender if the actor was unable to receive the message.
+* System messages:
+  * `PoisonPill()` kills an actor.
+  * `Terminated(actor)` is sent to all watchers when the actor stops.
+  * `DeadLetter(actor, message)` is sent back to the sender if the actor was unable to receive the message.

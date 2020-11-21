@@ -119,10 +119,10 @@ parallelism = 10
 
 
 async def count(_):
-    if random.random() < p_fail:
-        raise Exception('count failed')
     delay = random.uniform(0, 2 * avg_work_time)
     await asyncio.sleep(delay)
+    if random.random() < p_fail:
+        raise Exception('count failed')
     return 1
 
 
@@ -143,9 +143,15 @@ class Counter(Actor):
             self.counted += 1
             if self.counted == elements_to_count:
                 print(f'[{datetime.now()}] {self.name}: Finished!')
-                await self.system.shutdown()
+                self.system.shutdown()
         elif isinstance(message, WorkFailed):
             self.tell(self.master, SendWork(message.work))
+
+
+async def main():
+    system = ActorSystem()
+    system.create(Counter(), name='counter')
+    await system.stopped()
 
 
 if __name__ == '__main__':
@@ -160,10 +166,4 @@ if __name__ == '__main__':
     
     Note that we ignore the computational overhead of executing the code.
     """
-    loop = asyncio.get_event_loop()
-    try:
-        system = ActorSystem()
-        system.create(Counter(), name='counter')
-        loop.run_until_complete(system.stopped())
-    finally:
-        loop.close()
+    asyncio.run(main())

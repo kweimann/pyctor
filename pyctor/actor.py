@@ -1,7 +1,9 @@
+__all__ = ('ActorRef', 'Actor', 'ActorSystem', 'PoisonPill', 'DeadLetter', 'Terminated')
+
 import asyncio
 import uuid
 from dataclasses import dataclass
-from typing import Union, Optional
+from typing import Union
 
 
 @dataclass(repr=False, eq=False, frozen=True)
@@ -15,9 +17,10 @@ class ActorRef:  # serializable reference which represents an Actor
 
 
 class Actor:  # inheritable Actor class
+    # noinspection PyTypeChecker
     def __init__(self):
-        self.actor_ref = None
-        self.system = None
+        self.actor_ref: ActorRef = None
+        self.system: ActorSystem = None
 
     async def receive(
             self,
@@ -39,23 +42,43 @@ class Actor:  # inheritable Actor class
     def tell(
             self,
             actor: Union['Actor', ActorRef],
+            message: 'any'
+    ) -> None:
+        """Deliver a message to an actor.
+
+        Args:
+            actor: Actor that will receive a message from the system.
+            message: Message to another actor.
+
+        Returns:
+            None
+        """
+        self.system._tell(
+            actor=actor,
+            message=message,
+            sender=self.actor_ref)
+
+    # noinspection PyProtectedMember
+    def schedule_tell(
+            self,
+            actor: Union['Actor', ActorRef],
             message: 'any',
             *,
             delay: Union[None, int, float] = None,
             period: Union[None, int, float] = None
     ) -> asyncio.Task:
-        """Asynchronously deliver a message to another actor.
+        """Schedule a message to be delivered to an actor at some time.
 
         Args:
-            actor: Anther actor that will receive a message from this actor.
+            actor: Actor that will receive a message from the system.
             message: Message to another actor.
-            delay: Send message after a delay.
+            delay: Message will be delivered after a delay.
             period: Resend message periodically.
 
         Returns:
-            Delivery task that can be cancelled if the message is delayed or periodical.
+            Delivery task that can be cancelled.
         """
-        return self.system._tell(
+        return self.system._schedule_tell(
             actor=actor,
             message=message,
             sender=self.actor_ref,
@@ -116,6 +139,24 @@ class Actor:  # inheritable Actor class
         """
         pass
 
+    async def restarted(
+            self,
+            sender: ActorRef,
+            message: 'any',
+            error: Exception
+    ) -> None:
+        """Called by the system if receiving the message caused an error.
+
+        Args:
+            sender: Actor that sent the message.
+            message: Received message.
+            error: Raised exception.
+
+        Returns:
+            None
+        """
+        pass
+
     async def stopped(self) -> None:
         """Called by the system to let this actor know that they will not receive messages anymore.
 
@@ -133,12 +174,9 @@ class Actor:  # inheritable Actor class
 
 
 class ActorSystem:  # ActorSystem controls all the actors
-    def __init__(self, *, loop: Optional[asyncio.AbstractEventLoop] = None):
-        if loop is None:
-            loop = asyncio.get_event_loop()
-        self._loop = loop
+    def __init__(self):
         self._actors = {}
-        self._stopped = asyncio.Event(loop=loop)
+        self._stopped = asyncio.Event()
 
     def create(
             self,
@@ -171,12 +209,30 @@ class ActorSystem:  # ActorSystem controls all the actors
         actor.actor_ref = actor_ref
         actor.system = self
         actor_ctx = _ActorContext()
-        actor_ctx.lifecycle = self._loop.create_task(
-            self.__start_lifecycle(actor, actor_ref, actor_ctx))
+        actor_ctx.lifecycle = asyncio.get_event_loop().create_task(
+            self._actor_lifecycle_loop(actor, actor_ref, actor_ctx))
         self._actors[actor_ref] = actor_ctx
         return actor_ref
 
     def tell(
+            self,
+            actor: Union[Actor, ActorRef],
+            message: 'any'
+    ) -> None:
+        """Deliver a message to an actor.
+
+        Args:
+            actor: Actor that will receive a message from the system.
+            message: Message to another actor.
+
+        Returns:
+            None
+        """
+        self._tell(
+            actor=actor,
+            message=message)
+
+    def schedule_tell(
             self,
             actor: Union[Actor, ActorRef],
             message: 'any',
@@ -184,18 +240,18 @@ class ActorSystem:  # ActorSystem controls all the actors
             delay: Union[None, int, float] = None,
             period: Union[None, int, float] = None
     ) -> asyncio.Task:
-        """Asynchronously deliver a message to an actor.
+        """Schedule a message to be delivered to an actor at some time.
 
         Args:
             actor: Actor that will receive a message from the system.
             message: Message to another actor.
-            delay: Send message after a delay.
+            delay: Message will be delivered after a delay.
             period: Resend message periodically.
 
         Returns:
-            Delivery task that can be cancelled if the message is delayed or periodical.
+            Delivery task that can be cancelled.
         """
-        return self._tell(
+        return self._schedule_tell(
             actor=actor,
             message=message,
             delay=delay,
@@ -217,7 +273,7 @@ class ActorSystem:  # ActorSystem controls all the actors
             actor=actor,
             message=PoisonPill())
 
-    async def shutdown(
+    def shutdown(
             self,
             timeout: Union[None, int, float] = None
     ) -> None:
@@ -228,10 +284,9 @@ class ActorSystem:  # ActorSystem controls all the actors
             then the actors which are still running will be forcibly terminated.
 
         Returns:
-            Awaitable until the system is fully shutdown.
+            None
         """
-        self._loop.create_task(self._shutdown(timeout=timeout))
-        await self.stopped()
+        asyncio.create_task(self._shutdown(timeout=timeout))
 
     async def stopped(self) -> None:
         """Await system shutdown.
@@ -247,15 +302,61 @@ class ActorSystem:  # ActorSystem controls all the actors
             message: 'any',
             *,
             sender: Union[None, Actor, ActorRef] = None,  # sender is None if the system sends the message
-            delay=None,
-            period=None
-    ) -> asyncio.Task:
+    ) -> None:
         actor = self._validate_actor_ref(actor)
         if sender:
             sender = self._validate_actor_ref(sender)
-        ts = (self._loop.time() + delay) if delay else None
-        return self._loop.create_task(
-            self.__deliver(actor, message, sender=sender, ts=ts, period=period))
+            if sender not in self._actors:
+                raise ValueError(f'Actor does not exist: {sender}')
+        if actor in self._actors:
+            actor_ctx = self._actors[actor]
+            actor_ctx.letterbox.put_nowait((sender, message))
+        elif sender:
+            deadletter = DeadLetter(actor=actor, message=message)
+            self._tell(sender, deadletter)
+
+    def _schedule_tell(
+            self,
+            actor: Union[Actor, ActorRef],
+            message: 'any',
+            *,
+            sender: Union[None, Actor, ActorRef] = None,  # sender is None if the system sends the message
+            delay: Union[None, int, float] = None,
+            period: Union[None, int, float] = None
+    ) -> asyncio.Task:
+        if not delay:
+            if not period:
+                raise ValueError('Cannot schedule message without delay and period')
+            self._tell(actor, message, sender=sender)
+            delay = period
+        ts = asyncio.get_event_loop().time() + delay
+        return asyncio.create_task(
+            self._schedule_tell_loop(actor, message, sender=sender, ts=ts, period=period))
+
+    async def _schedule_tell_loop(
+            self,
+            actor: Union[Actor, ActorRef],
+            message: 'any',
+            *,
+            sender: Union[None, Actor, ActorRef] = None,  # sender is None if the system sends the message
+            ts: Union[None, int, float] = None,
+            period: Union[None, int, float] = None
+    ) -> None:
+        delay = (ts - asyncio.get_event_loop().time()) if ts else 0
+        while True:
+            if delay > 0:
+                await asyncio.sleep(delay)
+            if actor not in self._actors:
+                # actor has been stopped, so attempt to send a deadletter to the sender
+                if sender in self._actors:
+                    deadletter = DeadLetter(actor=actor, message=message)
+                    self._tell(sender, deadletter)
+                break
+            actor_ctx = self._actors[actor]
+            actor_ctx.letterbox.put_nowait((sender, message))
+            if not period:
+                break
+            delay = period
 
     def _watch(
             self,
@@ -263,7 +364,11 @@ class ActorSystem:  # ActorSystem controls all the actors
             other: Union[Actor, ActorRef]
     ) -> None:
         actor = self._validate_actor_ref(actor)
+        if actor not in self._actors:
+            raise ValueError(f'Actor does not exist: {actor}')
         other = self._validate_actor_ref(other)
+        if other not in self._actors:
+            raise ValueError(f'Actor does not exist: {other}')
         if actor == other:
             raise ValueError(f'Actor cannot watch themselves: {actor}')
         actor_ctx = self._actors[actor]
@@ -276,10 +381,12 @@ class ActorSystem:  # ActorSystem controls all the actors
             actor: Union[Actor, ActorRef],
             other: Union[Actor, ActorRef]
     ) -> None:
-        other = self._validate_actor_ref(other, must_exist=False)
+        actor = self._validate_actor_ref(actor)
+        if actor not in self._actors:
+            raise ValueError(f'Actor does not exist: {actor}')
+        other = self._validate_actor_ref(other)
         if other not in self._actors:
             return  # other actor has been terminated so unwatch is obsolete
-        actor = self._validate_actor_ref(actor)
         if actor == other:
             raise ValueError(f'Actor cannot unwatch themselves: {actor}')
         actor_ctx = self._actors[actor]
@@ -302,45 +409,7 @@ class ActorSystem:  # ActorSystem controls all the actors
                 lifecycle_task.cancel()
         self._stopped.set()
 
-    def _validate_actor_ref(
-            self,
-            actor: Union[Actor, ActorRef],
-            must_exist: bool = True
-    ) -> ActorRef:
-        if isinstance(actor, Actor):
-            actor = actor.actor_ref
-        if not isinstance(actor, ActorRef):
-            raise ValueError(f'Not an actor: {actor}')
-        if must_exist and actor not in self._actors:
-            raise ValueError(f'Actor does not exist: {actor}')
-        return actor
-
-    async def __deliver(
-            self,
-            actor: ActorRef,
-            message: 'any',
-            *,
-            sender: Optional[ActorRef] = None,
-            ts: Union[None, int, float] = None,
-            period: Union[None, int, float] = None
-    ) -> None:
-        delay = (ts - self._loop.time()) if ts else 0
-        while True:
-            if delay > 0:
-                await asyncio.sleep(delay)
-            if actor not in self._actors:
-                # actor has been stopped, so attempt to send a deadletter to the sender
-                if sender in self._actors:
-                    deadletter = DeadLetter(actor=actor, message=message)
-                    self._tell(sender, deadletter)
-                break
-            actor_ctx = self._actors[actor]
-            asyncio.create_task(actor_ctx.letterbox.put((sender, message)))
-            if not period:
-                break
-            delay = period
-
-    async def __start_lifecycle(
+    async def _actor_lifecycle_loop(
             self,
             actor: Actor,
             actor_ref: ActorRef,
@@ -352,12 +421,15 @@ class ActorSystem:  # ActorSystem controls all the actors
                 sender, message = await actor_ctx.letterbox.get()
                 if isinstance(message, PoisonPill):
                     break
-                asyncio.create_task(actor.receive(sender, message))
+                try:
+                    await actor.receive(sender, message)
+                except Exception as e:
+                    await actor.restarted(sender, message, e)
             await actor.stopped()
         finally:
             # notify others that actor has been terminated
             for other in actor_ctx.watched_by:
-                self.tell(other, Terminated(actor_ref))
+                self._tell(other, Terminated(actor_ref))
                 other_ctx = self._actors[other]
                 other_ctx.watching.remove(actor_ref)
             # unwatch other actors
@@ -367,10 +439,20 @@ class ActorSystem:  # ActorSystem controls all the actors
             # remove the actor
             del self._actors[actor_ref]
 
+    @staticmethod
+    def _validate_actor_ref(
+            actor: Union[Actor, ActorRef]
+    ) -> ActorRef:
+        if isinstance(actor, Actor):
+            actor = actor.actor_ref
+        if not isinstance(actor, ActorRef):
+            raise ValueError(f'Not an actor: {actor}')
+        return actor
+
 
 class _ActorContext:  # context class that holds the internal state of an actor
     def __init__(self):
-        self.letterbox = asyncio.Queue(maxsize=1)  # bounded queue
+        self.letterbox = asyncio.Queue()  # unbounded queue
         self.lifecycle = None  # main task controlling actor's lifecycle
         self.watching = []  # this actor is watching other actors in the list
         self.watched_by = []  # this actor is watched by other actors in the list

@@ -17,20 +17,20 @@ class Student(Actor):  # subclass of Actor
         if isinstance(message, Play):
             # Student was told to play.
             # Send a message to the other student which will start the match.
-            self.tell(message.student, 'ping!', delay=1)
+            self.tell(message.student, 'ping!')
         elif message == 'bye!':
             # The other student has stopped so this student stops as well.
             self.stop()
-        elif random.random() < 0.5:
-            # With a probability of 0.5 leave the playground and notify the other student.
+        elif random.random() < 0.25:
+            # With a probability of 0.25 leave the playground and notify the other student.
             self.tell(sender, 'bye!')
             self.stop()
         elif message == 'ping!':
             # Respond with "pong" after 1 second.
-            self.tell(sender, 'pong!', delay=1)
+            self.schedule_tell(sender, 'pong!', delay=1)
         elif message == 'pong!':
             # Respond with "ping" after 1 second.
-            self.tell(sender, 'ping!', delay=1)
+            self.schedule_tell(sender, 'ping!', delay=1)
         print(f'[{datetime.now()}] {sender.name} to {self.name}: {message}')
 
 
@@ -58,20 +58,19 @@ class Teacher(Actor):
             self.students -= 1
         if self.students == 0:
             # All students have stopped so shut down.
-            await self.system.shutdown()
+            self.system.shutdown()
 
     async def stopped(self):
         print(f'[{datetime.now()}] {self.name}: time to go back.')
 
 
+async def main():
+    # Create the actor system.
+    system = ActorSystem()
+    # Create the teacher.
+    system.create(Teacher(), name='Teacher')
+    # Run until system is shutdown.
+    await system.stopped()
+
 if __name__ == '__main__':
-    loop = asyncio.get_event_loop()
-    try:
-        # Create the actor system.
-        system = ActorSystem()
-        # Create the teacher.
-        system.create(Teacher(), name='Teacher')
-        # Run until system is shutdown.
-        loop.run_until_complete(system.stopped())
-    finally:
-        loop.close()
+    asyncio.run(main())

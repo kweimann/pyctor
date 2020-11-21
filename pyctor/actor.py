@@ -309,8 +309,6 @@ class ActorSystem:  # ActorSystem controls all the actors
         actor = self._validate_actor_ref(actor)
         if sender:
             sender = self._validate_actor_ref(sender)
-            if sender not in self._actors:
-                raise ValueError(f'Actor does not exist: {sender}')
         if actor in self._actors:
             actor_ctx = self._actors[actor]
             actor_ctx.letterbox.put_nowait((sender, message))
@@ -345,19 +343,13 @@ class ActorSystem:  # ActorSystem controls all the actors
             ts: Union[None, int, float] = None,
             period: Union[None, int, float] = None
     ) -> None:
+        actor = self._validate_actor_ref(actor)
         delay = (ts - asyncio.get_event_loop().time()) if ts else 0
         while True:
             if delay > 0:
                 await asyncio.sleep(delay)
-            if actor not in self._actors:
-                # actor has been stopped, so attempt to send a deadletter to the sender
-                if sender in self._actors:
-                    deadletter = DeadLetter(actor=actor, message=message)
-                    self._tell(sender, deadletter)
-                break
-            actor_ctx = self._actors[actor]
-            actor_ctx.letterbox.put_nowait((sender, message))
-            if not period:
+            self._tell(actor, message, sender=sender)
+            if not period or actor not in self._actors:
                 break
             delay = period
 

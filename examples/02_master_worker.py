@@ -3,12 +3,18 @@ import random
 from dataclasses import dataclass
 from datetime import datetime
 
-from pyctor import ActorSystem, Actor
+from pyctor import ActorSystem, Actor, ActorRef, Terminated
+
+
+@dataclass
+class WorkerReady:
+    pass
 
 
 @dataclass
 class SendWork:
     work: 'any'
+    send_to: ActorRef = None
 
 
 @dataclass
@@ -25,115 +31,111 @@ class WorkFailed:
 
 class Worker(Actor):
     """Worker does work and reports back to the master."""
-    def __init__(self, master, do_work_func):
+    def __init__(self, master):
         super().__init__()
         self.master = master
-        self.do_work_func = do_work_func
+
+    async def started(self):
+        self.watch(self.master)
+        self.tell(self.master, WorkerReady())
 
     async def receive(self, sender, message):
-        assert sender == self.master
         if isinstance(message, SendWork):
-            try:
-                result = await self.do_work_func(message.work)
-                response = WorkDone(message.work, result)
-            except Exception as e:
-                response = WorkFailed(message.work, e)
-            self.tell(self.master, response)
+            asyncio.create_task(self.do_work_report_back(message.work))
+        elif isinstance(message, (WorkDone, WorkFailed)):
+            self.tell(self.master, message)
+            self.tell(self.master, WorkerReady())
+        elif isinstance(message, Terminated):
+            if message.actor == self.master:
+                self.stop()
+
+    async def do_work_report_back(self, work):
+        try:
+            result = await self.do_work(work)
+            self.tell(self, WorkDone(work, result))
+        except Exception as e:
+            self.tell(self, WorkFailed(work, e))
+
+    async def do_work(self, work):
+        raise NotImplementedError
 
 
 class Master(Actor):
     """Master receives work from other actors, distributes the work
     across its workers and sends the results back."""
-    def __init__(self, do_work_func, num_workers):
+    def __init__(self, worker_init, num_workers):
         super().__init__()
-        self.do_work_func = do_work_func
+        self.worker_init = worker_init
         self.num_workers = num_workers
-        self.workers = {}
+        self.ready_workers = set()
+        self.busy_workers = {}
         self.work_queue = []
 
     async def started(self):
         for i in range(self.num_workers):
-            self.create_worker(name=f'worker-{i+1}')
+            worker = self.system.create(
+                self.worker_init(self.actor_ref),
+                name=f'Worker-{i+1}')
+            self.watch(worker)
 
     async def receive(self, sender, message):
+        if isinstance(message, WorkerReady):
+            assert sender not in self.busy_workers, sender
+            if self.work_queue:
+                work_sender, work = self.work_queue.pop(0)
+                self.tell(sender, SendWork(work))
+                self.busy_workers[sender] = (work_sender, work)
+            else:
+                self.ready_workers.add(sender)
         if isinstance(message, SendWork):
-            # Enqueue the work.
-            self.enqueue_work(sender, message)
-            self.dequeue_work()
+            work_sender = message.send_to or sender
+            if self.work_queue or not self.ready_workers:
+                self.work_queue.append((work_sender, message.work))
+            elif self.ready_workers:
+                worker = self.ready_workers.pop()
+                self.tell(worker, message)
+                self.busy_workers[worker] = (work_sender, message.work)
         elif isinstance(message, (WorkDone, WorkFailed)):
-            # Inform the work sender about the result.
-            work_sender, work_message = self.free_worker(sender)
-            assert message.work == work_message.work
+            assert sender in self.busy_workers
+            work_sender, work = self.busy_workers.pop(sender)
+            assert message.work == work
             self.tell(work_sender, message)
-            self.dequeue_work()
-
-    async def stopped(self):
-        for worker in self.workers:
-            self.system.stop(worker)
-
-    def create_worker(self, name=None):
-        worker = self.system.create(
-            Worker(self.actor_ref, self.do_work_func), name=name)
-        self.watch(worker)
-        self.workers[worker] = None
-
-    def enqueue_work(self, work_sender, work_message):
-        self.work_queue.append((work_sender, work_message))
-
-    def dequeue_work(self):
-        while self.work_queue:
-            free_worker = self.get_next_free_worker()
-            if free_worker is None:
-                break
-            work = self.work_queue.pop(0)
-            self.assign_work(free_worker, work)
-
-    def assign_work(self, worker, work):
-        assert worker in self.workers
-        current_work = self.workers[worker]
-        assert current_work is None
-        work_sender, work_message = work
-        self.tell(worker, work_message)
-        self.workers[worker] = work
-
-    def free_worker(self, worker):
-        assert worker in self.workers
-        work = self.workers[worker]
-        assert work is not None
-        self.workers[worker] = None
-        return work
-
-    def get_next_free_worker(self):
-        for worker, work in self.workers.items():
-            if work is None:
-                return worker
+        elif isinstance(message, Terminated):
+            if sender in self.ready_workers:
+                self.ready_workers.remove(sender)
+            elif sender in self.busy_workers:
+                work_sender, work = self.busy_workers.pop(sender)
+                self.tell(self, SendWork(work, send_to=work_sender))
 
 
 # Below you can find an example actor that uses the master-worker pattern implemented above.
 
 
-elements_to_count = 100
-avg_work_time = 1.
+elements_to_count = 1000
+avg_work_time = 0.1
 p_fail = 0.1
 parallelism = 10
 
 
-async def count(_):
-    delay = random.uniform(0, 2 * avg_work_time)
-    await asyncio.sleep(delay)
-    if random.random() < p_fail:
-        raise Exception('count failed')
-    return 1
+class CountWorker(Worker):
+    async def do_work(self, _):
+        delay = random.uniform(0, 2 * avg_work_time)
+        await asyncio.sleep(delay)  # simulate processing
+        if random.random() < p_fail:
+            raise Exception('count failed')
+        return 1
 
 
 class Counter(Actor):
     def __init__(self):
         super().__init__()
         self.counted = 0
+        self.failed = 0
 
     async def started(self):
         self.master = self.system.create(
-            Master(count, num_workers=parallelism), name='master')
+            Master(CountWorker, num_workers=parallelism),
+            name='Master')
         print(f'[{datetime.now()}] {self.name}: Start the count!')
         for i in range(elements_to_count):
             self.tell(self.master, SendWork(i))
@@ -142,28 +144,20 @@ class Counter(Actor):
         if isinstance(message, WorkDone):
             self.counted += 1
             if self.counted == elements_to_count:
-                print(f'[{datetime.now()}] {self.name}: Finished!')
+                print(f'[{datetime.now()}] {self.name}: Finished! '
+                      f'Fail rate: {self.failed / self.counted:.2%}')
                 self.system.shutdown()
         elif isinstance(message, WorkFailed):
+            self.failed += 1
             self.tell(self.master, SendWork(message.work))
 
 
 async def main():
     system = ActorSystem()
-    system.create(Counter(), name='counter')
+    system.create(Counter(), name='Counter')
     await system.stopped()
 
-
 if __name__ == '__main__':
-    """
-    We can estimate the average runtime of the counter using the following equation:
-    
-        avg_runtime = ((1 + p_fail) * elements_to_count * avg_work_time) / parallelism
-    
-    Plugging in the values above we get:
-    
-        avg_runtime = ((1 + 0.1) * 100 * 1.) / 10 = 11 seconds
-    
-    Note that we ignore the computational overhead of executing the code.
-    """
+    avg_runtime = ((1 + p_fail) * elements_to_count * avg_work_time) / parallelism
+    print(f'Expected runtime: {avg_runtime} seconds')
     asyncio.run(main())

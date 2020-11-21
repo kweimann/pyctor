@@ -157,7 +157,8 @@ class Actor:  # inheritable Actor class
         Returns:
             None
         """
-        logging.exception('%s failed to receive message: %s', sender, message, exc_info=error)
+        logging.exception('%s failed to receive message %s from %s',
+                          self, message, sender, exc_info=error)
 
     async def stopped(self) -> None:
         """Called by the system to let this actor know that they will not receive messages anymore.

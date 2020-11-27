@@ -31,12 +31,12 @@ class WorkFailed:
 
 class Worker(Actor):
     """Worker does work and reports back to the master."""
+
     def __init__(self, master):
         super().__init__()
         self.master = master
 
     async def started(self):
-        self.watch(self.master)
         self.tell(self.master, WorkerReady())
 
     async def receive(self, sender, message):
@@ -45,9 +45,6 @@ class Worker(Actor):
         elif isinstance(message, (WorkDone, WorkFailed)):
             self.tell(self.master, message)
             self.tell(self.master, WorkerReady())
-        elif isinstance(message, Terminated):
-            if message.actor == self.master:
-                self.stop()
 
     async def do_work_report_back(self, work):
         try:
@@ -63,6 +60,7 @@ class Worker(Actor):
 class Master(Actor):
     """Master receives work from other actors, distributes the work
     across its workers and sends the results back."""
+
     def __init__(self, worker_init, num_workers):
         super().__init__()
         self.worker_init = worker_init
@@ -73,10 +71,9 @@ class Master(Actor):
 
     async def started(self):
         for i in range(self.num_workers):
-            worker = self.system.create(
+            self.create(
                 self.worker_init(self.actor_ref),
                 name=f'Worker-{i+1}')
-            self.watch(worker)
 
     async def receive(self, sender, message):
         if isinstance(message, WorkerReady):
@@ -133,7 +130,7 @@ class Counter(Actor):
         self.failed = 0
 
     async def started(self):
-        self.master = self.system.create(
+        self.master = self.create(
             Master(CountWorker, num_workers=parallelism),
             name='Master')
         print(f'[{datetime.now()}] {self.name}: Start the count!')

@@ -12,6 +12,8 @@ class Play:
 
 
 class Student(Actor):  # subclass of Actor
+    """Students exchange ping-pong messages until one of them randomly decides to stop."""
+
     # Every Actor must implement `receive` to receive messages.
     async def receive(self, sender, message):
         if isinstance(message, Play):
@@ -31,37 +33,36 @@ class Student(Actor):  # subclass of Actor
         elif message == 'pong!':
             # Respond with "ping" after 1 second.
             self.schedule_tell(sender, 'ping!', delay=1)
-        print(f'[{datetime.now()}] {sender} to {self}: {message}')
+        print(f'[{datetime.now()}] {sender.name} to {self.name}: {message}')
 
 
 class Teacher(Actor):
+    """Teacher creates the two students and watches them.
+    If students stop playing, the teacher shuts down the entire system."""
+
     def __init__(self):
         super().__init__()
         self.students = 0
 
     async def started(self):
-        # Create 2 students: Mike and Sarah.
-        mike = self.system.create(Student(), name='Mike')
-        sarah = self.system.create(Student(), name='Sarah')
-        # Get notified when students stop.
-        self.watch(mike)
-        self.watch(sarah)
+        # Create 2 students: Mike and Sarah. Children are watched by default.
+        mike = self.create(Student(), name='Mike')
+        sarah = self.create(Student(), name='Sarah')
+        self.students = 2
         # Tell Mike to play with Sarah.
         self.tell(mike, Play(sarah))
-        # Initialize the number of students to 2.
-        self.students = 2
         print(f'[{datetime.now()}] {self}: it\'s playtime!')
 
     async def receive(self, sender, message):
         if isinstance(message, Terminated):
-            # Student has stopped.
             self.students -= 1
+            print(f'[{datetime.now()}] {message.actor.name} has stopped playing')
         if self.students == 0:
             # All students have stopped so shut down.
             self.system.shutdown()
 
     async def stopped(self):
-        print(f'[{datetime.now()}] {self}: time to go back.')
+        print(f'[{datetime.now()}] {self.name}: time to go back.')
 
 
 async def main():
